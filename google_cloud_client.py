@@ -96,7 +96,7 @@ class GoogleCloudClient:
                 continue
             
             transcript = result.alternatives[0].transcript
-            is_final = result.is_final_alternative
+            is_final = result.is_final
             
             if on_transcript:
                 on_transcript(transcript, is_final)
