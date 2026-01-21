@@ -20,13 +20,14 @@ class TranslationEngine:
         target_lang_code: str,  # Full language code for STT (e.g., 'uk-UA')
         voice_source: str,
         voice_target: str,
-        sample_rate: int = 16000
+        sample_rate: int = 16000,
+        inbound_audio_capture: Optional[AudioCapture] = None
     ):
         """Initialize translation engine.
         
         Args:
             google_client: Google Cloud client instance
-            audio_capture: Audio capture instance
+            audio_capture: Audio capture instance for outbound (microphone)
             source_lang: Source language code (e.g., 'ru')
             target_lang: Target language code (e.g., 'uk')
             source_lang_code: Full language code for STT (e.g., 'ru-RU')
@@ -34,9 +35,11 @@ class TranslationEngine:
             voice_source: Voice name for source language TTS
             voice_target: Voice name for target language TTS
             sample_rate: Audio sample rate
+            inbound_audio_capture: Optional audio capture for inbound (call audio)
         """
         self.google_client = google_client
         self.audio_capture = audio_capture
+        self.inbound_audio_capture = inbound_audio_capture
         self.source_lang = source_lang
         self.target_lang = target_lang
         self.source_lang_code = source_lang_code
@@ -210,26 +213,112 @@ class TranslationEngine:
             print(f"Error in outbound translation: {e}")
     
     def _process_inbound(self) -> None:
-        """Process inbound audio: target language → source language.
+        """Process inbound audio: target language → source language."""
+        if not self.inbound_audio_capture:
+            print(f"Inbound translation disabled (no inbound audio device configured)")
+            while self.is_running:
+                time.sleep(1)
+            return
         
-        Note: This requires system audio capture, which may need special setup on Mac.
-        For now, this is a placeholder that can be extended.
-        """
         print(f"Inbound translation started: {self.target_lang} → {self.source_lang}")
-        print("Note: System audio capture may require additional setup on Mac")
         
-        # For system audio, you would need to:
-        # 1. Use a virtual audio device (like BlackHole or Soundflower)
-        # 2. Route call audio through that device
-        # 3. Capture from that device here
+        buffer = []
+        last_process_time = time.time()
+        last_audio_time = time.time()
         
-        # Placeholder: This would process system/call audio
-        # For now, we'll note that this requires additional Mac-specific setup
+        def audio_callback(audio_data: bytes) -> None:
+            """Callback for inbound/call audio."""
+            nonlocal buffer, last_process_time, last_audio_time
+            
+            current_time = time.time()
+            
+            # Check audio level to detect silence
+            import numpy as np
+            audio_array = np.frombuffer(audio_data, dtype=np.int16)
+            audio_level = np.abs(audio_array.astype(np.float32) / 32767.0).max()
+            
+            with self._buffer_lock:
+                buffer.append(audio_data)
+                
+                # Update last audio time if we detect sound
+                if audio_level > self._silence_threshold:
+                    last_audio_time = current_time
+                
+                # Calculate time since last audio
+                time_since_audio = current_time - last_audio_time
+                time_since_process = current_time - last_process_time
+                
+                should_process = False
+                
+                if buffer:
+                    buffer_size = sum(len(chunk) for chunk in buffer) // 2
+                    
+                    if time_since_audio >= self._silence_duration and time_since_process >= self._min_buffer_duration:
+                        should_process = True
+                    elif time_since_process >= self._max_buffer_duration:
+                        should_process = True
+                    elif buffer_size >= self._buffer_size_samples and time_since_process >= self._min_buffer_duration:
+                        should_process = True
+                
+                if should_process and buffer:
+                    combined = b''.join(buffer)
+                    buffer.clear()
+                    last_process_time = current_time
+                    last_audio_time = current_time
+                    
+                    threading.Thread(
+                        target=self._translate_inbound_chunk,
+                        args=(combined,),
+                        daemon=True
+                    ).start()
+        
+        # Start inbound audio input with callback
+        self.inbound_audio_capture.start_input_stream(audio_callback)
+        
+        # Keep thread alive
         while self.is_running:
-            time.sleep(1)
-            # TODO: Implement system audio capture
-            # This would follow the same pattern as _process_outbound
-            # but capture from system audio instead of microphone
+            time.sleep(0.1)
+    
+    def _translate_inbound_chunk(self, audio_data: bytes) -> None:
+        """Translate a chunk of inbound audio."""
+        try:
+            # Use non-streaming recognition for buffered chunks
+            text = self.google_client.transcribe_audio(
+                audio_data,
+                self.target_lang_code,
+                self.sample_rate
+            )
+            
+            if not text.strip():
+                return
+            
+            print(f"\n{'='*70}")
+            print(f"🎤 INBOUND RECOGNIZED ({self.target_lang.upper()}): {text}")
+            
+            # Translate
+            translated = self.google_client.translate_text(
+                text,
+                self.target_lang,
+                self.source_lang
+            )
+            
+            print(f"🌐 INBOUND TRANSLATED ({self.source_lang.upper()}): {translated}")
+            print(f"{'='*70}\n")
+            
+            # Synthesize speech (source language)
+            audio_output = self.google_client.synthesize_speech(
+                translated,
+                self.source_lang_code,
+                self.voice_source,
+                self.sample_rate
+            )
+            
+            # Play translated audio
+            if audio_output:
+                self.audio_capture.play_audio(audio_output)
+        
+        except Exception as e:
+            print(f"Error in inbound translation: {e}")
     
     def process_inbound_audio(self, audio_data: bytes) -> None:
         """Process inbound audio chunk (for manual system audio integration).

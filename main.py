@@ -46,6 +46,17 @@ class TranslationApp:
             output_device=audio_config['output_device']
         )
         
+        # Initialize inbound audio capture if configured
+        self.inbound_audio_capture = None
+        if audio_config.get('input_device_inbound') is not None:
+            print("Setting up inbound audio capture (for call audio)...")
+            self.inbound_audio_capture = AudioCapture(
+                sample_rate=audio_config['sample_rate'],
+                chunk_size=audio_config['chunk_size'],
+                input_device=audio_config['input_device_inbound'],
+                output_device=None  # Inbound doesn't need output
+            )
+        
         # Map language codes
         source_lang = self.config.source_language
         target_lang = self.config.target_language
@@ -76,7 +87,8 @@ class TranslationApp:
             target_lang_code=target_lang_code,
             voice_source=voice_source,
             voice_target=voice_target,
-            sample_rate=audio_config['sample_rate']
+            sample_rate=audio_config['sample_rate'],
+            inbound_audio_capture=self.inbound_audio_capture
         )
         
         print("Initialization complete!")
@@ -122,6 +134,8 @@ class TranslationApp:
         
         if self.audio_capture:
             self.audio_capture.stop()
+        if self.inbound_audio_capture:
+            self.inbound_audio_capture.stop()
         
         print("Application stopped.")
 

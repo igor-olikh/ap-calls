@@ -57,6 +57,7 @@ class Config:
         audio_config = self._config.get('audio', {})
         self._config['audio'] = {
             'input_device': audio_config.get('input_device'),
+            'input_device_inbound': audio_config.get('input_device_inbound'),
             'output_device': audio_config.get('output_device'),
             'sample_rate': audio_config.get('sample_rate', 16000),
             'chunk_size': audio_config.get('chunk_size', 4096),
