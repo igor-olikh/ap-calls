@@ -56,12 +56,8 @@ class GoogleCloudClient:
             audio_stream: Iterator of audio chunks (bytes)
         
         Yields:
-            StreamingRecognizeRequest objects
+            StreamingRecognizeRequest objects (without config, as config is passed separately)
         """
-        if self._streaming_config is None:
-            raise ValueError("Streaming STT not configured. Call setup_streaming_stt first.")
-        
-        yield speech.StreamingRecognizeRequest(streaming_config=self._streaming_config)
         for audio_chunk in audio_stream:
             yield speech.StreamingRecognizeRequest(audio_content=audio_chunk)
     
@@ -86,7 +82,10 @@ class GoogleCloudClient:
         self.setup_streaming_stt(language_code, sample_rate)
         request_generator = self._create_request_generator(audio_stream)
         
-        responses = self.speech_client.streaming_recognize(request_generator)
+        responses = self.speech_client.streaming_recognize(
+            config=self._streaming_config,
+            requests=request_generator
+        )
         
         for response in responses:
             if not response.results:

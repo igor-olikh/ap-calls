@@ -58,8 +58,20 @@ class AudioCapture:
             if status:
                 print(f"Audio input status: {status}")
             
+            # Calculate audio level for debugging
+            audio_level = np.abs(indata).max()
+            
             # Convert to int16 PCM
             audio_data = (indata[:, 0] * 32767).astype(np.int16)
+            
+            # Debug: print audio level occasionally (every 50 callbacks ~2 seconds)
+            if not hasattr(audio_callback, '_counter'):
+                audio_callback._counter = 0
+            audio_callback._counter += 1
+            if audio_callback._counter % 50 == 0:
+                bar_length = int(audio_level * 30)
+                bar = '=' * bar_length
+                print(f"\r[Audio] Level: [{bar:<30}] {audio_level:.4f}", end='', flush=True)
             
             if callback:
                 callback(audio_data)

@@ -105,9 +105,21 @@ class TranslationEngine:
             """Callback for microphone audio."""
             nonlocal buffer, last_process_time
             
+            # Debug: track if we're receiving audio
+            if not hasattr(audio_callback, '_chunk_count'):
+                audio_callback._chunk_count = 0
+                audio_callback._last_log = time.time()
+            
+            audio_callback._chunk_count += 1
+            current_time = time.time()
+            
+            # Log every 2 seconds that we're receiving audio
+            if current_time - audio_callback._last_log >= 2.0:
+                print(f"\n[Debug] Received {audio_callback._chunk_count} audio chunks in last 2 seconds")
+                audio_callback._last_log = current_time
+            
             with self._buffer_lock:
                 buffer.append(audio_data)
-                current_time = time.time()
                 
                 # Process buffer if enough time has passed or buffer is large enough
                 buffer_size = sum(len(chunk) for chunk in buffer) // 2  # int16 = 2 bytes
