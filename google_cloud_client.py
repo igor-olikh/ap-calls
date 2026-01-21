@@ -1,0 +1,170 @@
+"""Google Cloud API client wrapper for STT, Translation, and TTS."""
+import os
+import io
+from typing import Iterator, Optional, Callable
+from google.cloud import speech
+from google.cloud import translate_v2 as translate
+from google.cloud import texttospeech
+from google.oauth2 import service_account
+
+
+class GoogleCloudClient:
+    """Wrapper for Google Cloud Speech-to-Text, Translation, and Text-to-Speech APIs."""
+    
+    def __init__(self, credentials_path: str):
+        """Initialize Google Cloud clients.
+        
+        Args:
+            credentials_path: Path to service account JSON key file
+        """
+        credentials = service_account.Credentials.from_service_account_file(
+            credentials_path
+        )
+        
+        # Initialize clients
+        self.speech_client = speech.SpeechClient(credentials=credentials)
+        self.translate_client = translate.Client(credentials=credentials)
+        self.tts_client = texttospeech.TextToSpeechClient(credentials=credentials)
+        
+        # Streaming recognition config
+        self._streaming_config = None
+    
+    def setup_streaming_stt(self, language_code: str, sample_rate: int = 16000) -> None:
+        """Setup streaming speech-to-text configuration.
+        
+        Args:
+            language_code: Language code (e.g., 'ru-RU', 'uk-UA')
+            sample_rate: Audio sample rate in Hz
+        """
+        config = speech.RecognitionConfig(
+            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+            sample_rate_hertz=sample_rate,
+            language_code=language_code,
+            enable_automatic_punctuation=True,
+            model='latest_long',
+        )
+        
+        self._streaming_config = speech.StreamingRecognitionConfig(
+            config=config,
+            interim_results=True,
+        )
+    
+    def _create_request_generator(self, audio_stream: Iterator[bytes]) -> Iterator[speech.StreamingRecognizeRequest]:
+        """Create a request generator for streaming recognition.
+        
+        Args:
+            audio_stream: Iterator of audio chunks (bytes)
+        
+        Yields:
+            StreamingRecognizeRequest objects
+        """
+        if self._streaming_config is None:
+            raise ValueError("Streaming STT not configured. Call setup_streaming_stt first.")
+        
+        yield speech.StreamingRecognizeRequest(streaming_config=self._streaming_config)
+        for audio_chunk in audio_stream:
+            yield speech.StreamingRecognizeRequest(audio_content=audio_chunk)
+    
+    def transcribe_streaming(
+        self,
+        audio_stream: Iterator[bytes],
+        language_code: str,
+        sample_rate: int = 16000,
+        on_transcript: Optional[Callable[[str, bool], None]] = None
+    ) -> Iterator[str]:
+        """Transcribe audio stream in real-time.
+        
+        Args:
+            audio_stream: Iterator of audio chunks (bytes)
+            language_code: Language code for recognition
+            sample_rate: Audio sample rate
+            on_transcript: Optional callback for transcripts (text, is_final)
+        
+        Yields:
+            Final transcript text
+        """
+        self.setup_streaming_stt(language_code, sample_rate)
+        request_generator = self._create_request_generator(audio_stream)
+        
+        responses = self.speech_client.streaming_recognize(request_generator)
+        
+        for response in responses:
+            if not response.results:
+                continue
+            
+            result = response.results[0]
+            if not result.alternatives:
+                continue
+            
+            transcript = result.alternatives[0].transcript
+            is_final = result.is_final_alternative
+            
+            if on_transcript:
+                on_transcript(transcript, is_final)
+            
+            if is_final and transcript:
+                yield transcript
+    
+    def translate_text(self, text: str, source_lang: str, target_lang: str) -> str:
+        """Translate text from source to target language.
+        
+        Args:
+            text: Text to translate
+            source_lang: Source language code (e.g., 'ru', 'uk')
+            target_lang: Target language code (e.g., 'uk', 'ru')
+        
+        Returns:
+            Translated text
+        """
+        if not text.strip():
+            return ""
+        
+        result = self.translate_client.translate(
+            text,
+            source_language=source_lang,
+            target_language=target_lang,
+            model='nmt'  # Neural Machine Translation
+        )
+        
+        return result['translatedText']
+    
+    def synthesize_speech(
+        self,
+        text: str,
+        language_code: str,
+        voice_name: str,
+        sample_rate: int = 24000
+    ) -> bytes:
+        """Synthesize speech from text.
+        
+        Args:
+            text: Text to synthesize
+            language_code: Language code (e.g., 'ru-RU', 'uk-UA')
+            voice_name: Voice name (e.g., 'ru-RU-Wavenet-D', 'uk-UA-Wavenet-A')
+            sample_rate: Output audio sample rate
+        
+        Returns:
+            Audio data as bytes (LINEAR16 PCM)
+        """
+        if not text.strip():
+            return b''
+        
+        synthesis_input = texttospeech.SynthesisInput(text=text)
+        
+        voice = texttospeech.VoiceSelectionParams(
+            language_code=language_code,
+            name=voice_name,
+        )
+        
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.LINEAR16,
+            sample_rate_hertz=sample_rate,
+        )
+        
+        response = self.tts_client.synthesize_speech(
+            input=synthesis_input,
+            voice=voice,
+            audio_config=audio_config
+        )
+        
+        return response.audio_content

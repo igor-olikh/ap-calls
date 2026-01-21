@@ -1,0 +1,17 @@
+google_cloud:
+  credentials_path: "/path/to/service-account-key.json"
+  
+languages:
+  source: "ru"  # Russian
+  target: "uk"  # Ukrainian
+
+audio:
+  input_device: null  # null = default microphone
+  output_device: null  # null = default speakers
+  sample_rate: 16000
+  chunk_size: 4096
+
+translation:
+  model: "nmt"  # Neural Machine Translation
+  voice_ru: "ru-RU-Wavenet-D"  # Russian voice
+  voice_uk: "uk-UA-Wavenet-A"  # Ukrainian voice
