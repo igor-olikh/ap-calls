@@ -104,6 +104,84 @@ class GoogleCloudClient:
             if is_final and transcript:
                 yield transcript
     
+    def transcribe_audio(self, audio_data: bytes, language_code: str, sample_rate: int = 16000) -> str:
+        """Transcribe audio data using non-streaming recognition.
+        
+        Args:
+            audio_data: Audio data as bytes (LINEAR16 PCM)
+            language_code: Language code for recognition
+            sample_rate: Audio sample rate
+        
+        Returns:
+            Transcribed text
+        """
+        # Use enhanced model for better accuracy, especially for Russian
+        use_enhanced = True
+        model = 'latest_long'  # Best for longer phrases
+        
+        # Adjust sample rate if needed (Google Cloud supports 8000-48000 Hz)
+        # For best quality, use 44100 or 48000, but 16000 is minimum for good recognition
+        effective_sample_rate = sample_rate
+        if sample_rate > 48000:
+            effective_sample_rate = 48000
+        elif sample_rate < 8000:
+            effective_sample_rate = 16000
+        
+        config = speech.RecognitionConfig(
+            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+            sample_rate_hertz=effective_sample_rate,
+            language_code=language_code,
+            enable_automatic_punctuation=True,
+            use_enhanced=use_enhanced,
+            model=model,
+            # Request multiple alternatives to get better matches
+            max_alternatives=3,
+            # Enable profanity filter (optional, can be removed)
+            profanity_filter=False,
+            # Enable word-level confidence
+            enable_word_confidence=True,
+            # Enable word time offsets for better context
+            enable_word_time_offsets=True,
+        )
+        
+        audio = speech.RecognitionAudio(content=audio_data)
+        
+        response = self.speech_client.recognize(config=config, audio=audio)
+        
+        if not response.results:
+            return ""
+        
+        # Use the best alternative (highest confidence)
+        best_transcript = ""
+        best_confidence = 0.0
+        all_alternatives = []
+        
+        for result in response.results:
+            if result.alternatives:
+                # Check all alternatives and pick the best one
+                for alternative in result.alternatives:
+                    confidence = alternative.confidence if hasattr(alternative, 'confidence') and alternative.confidence else 0.0
+                    all_alternatives.append((alternative.transcript, confidence))
+                    if confidence > best_confidence:
+                        best_confidence = confidence
+                        best_transcript = alternative.transcript
+        
+        # Debug: show alternatives if confidence is low
+        if best_confidence < 0.7 and len(all_alternatives) > 1:
+            print(f"[Debug] Low confidence ({best_confidence:.2f}), alternatives: {all_alternatives[:3]}")
+        
+        # If we found a good match, use it; otherwise use the first alternative
+        if best_transcript:
+            return best_transcript
+        
+        # Fallback: combine all first alternatives
+        transcripts = []
+        for result in response.results:
+            if result.alternatives:
+                transcripts.append(result.alternatives[0].transcript)
+        
+        return " ".join(transcripts)
+    
     def translate_text(self, text: str, source_lang: str, target_lang: str) -> str:
         """Translate text from source to target language.
         

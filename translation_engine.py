@@ -55,7 +55,10 @@ class TranslationEngine:
         self._buffer_lock = threading.Lock()
         
         # Minimum buffer size before processing (to reduce API calls)
-        self._min_buffer_duration = 0.5  # seconds
+        self._min_buffer_duration = 1.0  # seconds - wait for more speech
+        self._max_buffer_duration = 3.0  # seconds - max wait before processing
+        self._silence_threshold = 0.01  # Audio level below this is considered silence
+        self._silence_duration = 0.5  # seconds of silence before processing
         self._buffer_size_samples = int(self.sample_rate * self._min_buffer_duration)
     
     def start(self) -> None:
@@ -100,45 +103,62 @@ class TranslationEngine:
         
         buffer = []
         last_process_time = time.time()
+        last_audio_time = time.time()
         
         def audio_callback(audio_data: bytes) -> None:
             """Callback for microphone audio."""
-            nonlocal buffer, last_process_time
+            nonlocal buffer, last_process_time, last_audio_time
             
-            # Debug: track if we're receiving audio
-            if not hasattr(audio_callback, '_chunk_count'):
-                audio_callback._chunk_count = 0
-                audio_callback._last_log = time.time()
-            
-            audio_callback._chunk_count += 1
             current_time = time.time()
             
-            # Log every 2 seconds that we're receiving audio
-            if current_time - audio_callback._last_log >= 2.0:
-                print(f"\n[Debug] Received {audio_callback._chunk_count} audio chunks in last 2 seconds")
-                audio_callback._last_log = current_time
+            # Check audio level to detect silence
+            import numpy as np
+            audio_array = np.frombuffer(audio_data, dtype=np.int16)
+            audio_level = np.abs(audio_array.astype(np.float32) / 32767.0).max()
             
             with self._buffer_lock:
                 buffer.append(audio_data)
                 
-                # Process buffer if enough time has passed or buffer is large enough
-                buffer_size = sum(len(chunk) for chunk in buffer) // 2  # int16 = 2 bytes
+                # Update last audio time if we detect sound
+                if audio_level > self._silence_threshold:
+                    last_audio_time = current_time
                 
-                if (current_time - last_process_time >= self._min_buffer_duration or
-                    buffer_size >= self._buffer_size_samples):
+                # Calculate time since last audio
+                time_since_audio = current_time - last_audio_time
+                time_since_process = current_time - last_process_time
+                
+                # Process buffer if:
+                # 1. We've had silence for the threshold duration (speech ended)
+                # 2. OR we've been buffering for max duration (timeout)
+                # 3. OR we have minimum buffer and enough time has passed
+                should_process = False
+                
+                if buffer:
+                    buffer_size = sum(len(chunk) for chunk in buffer) // 2  # int16 = 2 bytes
                     
-                    if buffer:
-                        # Combine buffer chunks
-                        combined = b''.join(buffer)
-                        buffer.clear()
-                        last_process_time = current_time
-                        
-                        # Process in separate thread to avoid blocking
-                        threading.Thread(
-                            target=self._translate_outbound_chunk,
-                            args=(combined,),
-                            daemon=True
-                        ).start()
+                    if time_since_audio >= self._silence_duration and time_since_process >= self._min_buffer_duration:
+                        # Speech ended - process what we have
+                        should_process = True
+                    elif time_since_process >= self._max_buffer_duration:
+                        # Timeout - process anyway
+                        should_process = True
+                    elif buffer_size >= self._buffer_size_samples and time_since_process >= self._min_buffer_duration:
+                        # Enough audio collected
+                        should_process = True
+                
+                if should_process and buffer:
+                    # Combine buffer chunks
+                    combined = b''.join(buffer)
+                    buffer.clear()
+                    last_process_time = current_time
+                    last_audio_time = current_time
+                    
+                    # Process in separate thread to avoid blocking
+                    threading.Thread(
+                        target=self._translate_outbound_chunk,
+                        args=(combined,),
+                        daemon=True
+                    ).start()
         
         # Start audio input with callback
         self.audio_capture.start_input_stream(audio_callback)
@@ -150,30 +170,19 @@ class TranslationEngine:
     def _translate_outbound_chunk(self, audio_data: bytes) -> None:
         """Translate a chunk of outbound audio."""
         try:
-            # Convert bytes to iterator for streaming STT
-            def audio_stream():
-                # Split into smaller chunks for streaming
-                chunk_size = 4096
-                for i in range(0, len(audio_data), chunk_size):
-                    yield audio_data[i:i + chunk_size]
-            
-            # Transcribe (source language)
-            transcripts = list(self.google_client.transcribe_streaming(
-                audio_stream(),
+            # Use non-streaming recognition for buffered chunks (faster and more reliable)
+            text = self.google_client.transcribe_audio(
+                audio_data,
                 self.source_lang_code,
                 self.sample_rate
-            ))
-            
-            if not transcripts:
-                return
-            
-            # Get the last (most complete) transcript
-            text = ' '.join(transcripts)
+            )
             
             if not text.strip():
                 return
             
-            print(f"[Outbound] Recognized ({self.source_lang}): {text}")
+            print(f"\n{'='*70}")
+            print(f"🎤 RECOGNIZED ({self.source_lang.upper()}): {text}")
+            # Note: Confidence score would be shown if available from transcribe_audio
             
             # Translate
             translated = self.google_client.translate_text(
@@ -182,7 +191,8 @@ class TranslationEngine:
                 self.target_lang
             )
             
-            print(f"[Outbound] Translated ({self.target_lang}): {translated}")
+            print(f"🌐 TRANSLATED ({self.target_lang.upper()}): {translated}")
+            print(f"{'='*70}\n")
             
             # Synthesize speech (target language)
             audio_output = self.google_client.synthesize_speech(
